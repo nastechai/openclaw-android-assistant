@@ -1,0 +1,6 @@
+modules = ["nodejs-20", "swift-5.8", "bash"]
+[agent]
+expertMode = true
+
+[nix]
+channel = "stable-25_05"
