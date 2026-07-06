@@ -18,9 +18,40 @@ android {
         versionName = "0.1.1"
     }
 
+    signingConfigs {
+        // Release APK is signed so it can be sideloaded on any device.
+        //
+        // CI path: the workflow decodes ANDROID_KEYSTORE_BASE64 to a file and
+        //   passes ANDROID_KEYSTORE_PATH, ANDROID_KEY_ALIAS, ANDROID_STORE_PASSWORD,
+        //   ANDROID_KEY_PASSWORD as Gradle project properties (-P flags).
+        //
+        // Local / fallback path: uses the built-in SDK debug keystore so
+        //   `./gradlew assembleRelease` always produces a signed APK without extra setup.
+        create("release") {
+            val ksPath        = project.findProperty("ANDROID_KEYSTORE_PATH")   as String?
+            val keyAlias      = project.findProperty("ANDROID_KEY_ALIAS")       as String?
+            val storePassword = project.findProperty("ANDROID_STORE_PASSWORD")  as String?
+            val keyPassword   = project.findProperty("ANDROID_KEY_PASSWORD")    as String?
+
+            if (ksPath != null && keyAlias != null && storePassword != null && keyPassword != null) {
+                storeFile          = file(ksPath)
+                this.storePassword = storePassword
+                this.keyAlias      = keyAlias
+                this.keyPassword   = keyPassword
+            } else {
+                // Fall back to the SDK debug keystore for local unsigned builds
+                storeFile     = signingConfigs.getByName("debug").storeFile
+                storePassword = signingConfigs.getByName("debug").storePassword
+                keyAlias      = signingConfigs.getByName("debug").keyAlias
+                keyPassword   = signingConfigs.getByName("debug").keyPassword
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("release")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"

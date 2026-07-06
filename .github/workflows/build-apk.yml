@@ -1,6 +1,8 @@
 name: Build APK
 
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -46,18 +48,49 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Build debug APK
+      # ── Signing ────────────────────────────────────────────────────────────
+      # If ANDROID_KEYSTORE_BASE64 is set as a repo secret, decode it and pass
+      # the path + passwords to Gradle so the release APK is fully signed.
+      # On first-time builds (no secret yet), fall back to the SDK debug key.
+      - name: Decode keystore (if secret present)
+        id: keystore
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$ANDROID_KEYSTORE_BASE64" ]; then
+            echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > "${{ github.workspace }}/anyclaw-release.jks"
+            echo "path=${{ github.workspace }}/anyclaw-release.jks" >> "$GITHUB_OUTPUT"
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "No ANDROID_KEYSTORE_BASE64 secret — using debug keystore fallback"
+          fi
+
+      - name: Build release APK
         working-directory: android
-        run: ./gradlew assembleDebug
+        env:
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          GRADLE_ARGS="assembleRelease"
+          if [ "${{ steps.keystore.outputs.available }}" = "true" ]; then
+            GRADLE_ARGS="$GRADLE_ARGS \
+              -PANDROID_KEYSTORE_PATH=${{ steps.keystore.outputs.path }} \
+              -PANDROID_KEY_ALIAS=${ANDROID_KEY_ALIAS} \
+              -PANDROID_STORE_PASSWORD=${ANDROID_STORE_PASSWORD} \
+              -PANDROID_KEY_PASSWORD=${ANDROID_KEY_PASSWORD}"
+          fi
+          ./gradlew $GRADLE_ARGS
 
       - name: Rename APK
-        run: cp android/app/build/outputs/apk/debug/app-debug.apk android/app/build/outputs/apk/debug/anyclaw.apk
+        run: cp android/app/build/outputs/apk/release/app-release.apk android/app/build/outputs/apk/release/anyclaw.apk
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: anyclaw
-          path: android/app/build/outputs/apk/debug/anyclaw.apk
+          path: android/app/build/outputs/apk/release/anyclaw.apk
 
       - name: Generate changelog
         if: github.ref_type == 'branch'
@@ -79,10 +112,11 @@ jobs:
         if: github.ref_type == 'branch'
         uses: softprops/action-gh-release@v2
         with:
+          token: ${{ secrets.PAT || github.token }}
           tag_name: v${{ github.run_number }}
           name: "AnyClaw v${{ github.run_number }} (${{ github.ref_name }})"
           body: |
-            🦞 **AnyClaw** — OpenClaw + Codex on Android
+            🦞 **AnyClaw** — OpenClaw + Codex + Nastech Agent on Android
 
             📱 Install the APK on any ARM64 Android 7.0+ device. No root required.
 
@@ -92,6 +126,6 @@ jobs:
             ---
             Branch: ${{ github.ref_name }}
             Built from commit ${{ github.sha }}
-          files: android/app/build/outputs/apk/debug/anyclaw.apk
+          files: android/app/build/outputs/apk/release/anyclaw.apk
           draft: false
           prerelease: false

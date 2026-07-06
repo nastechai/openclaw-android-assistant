@@ -1531,9 +1531,10 @@ WEOF
         env["NASTECH_HOME"] = "${paths.homeDir}/.nastech"
 
         val shell = "${paths.prefixDir}/bin/sh"
-        // Use 'nastech web --port PORT' for the dashboard server.
-        // Falls back to running nastech directly if 'web' subcommand is unavailable.
-        val cmd = "exec $nastechBin web --port $NASTECH_PORT 2>&1"
+        // 'nastech gateway' starts the MCP gateway / web dashboard.
+        // The port is read from ~/.nastech/config (default 9119).
+        // NASTECH_GATEWAY_PORT env var overrides the port if supported.
+        val cmd = "exec $nastechBin gateway 2>&1"
 
         Log.i(TAG, "Starting Nastech: $cmd")
 
