@@ -43,4 +43,19 @@ npm install -g codex-web-local || {
 }
 
 echo "[setup] Codex CLI: $(codex --version 2>/dev/null || echo 'installed')"
+
+echo "[setup] Installing Nastech Agent..."
+# TERMUX_VERSION=1 triggers pip/venv install (no uv), compatible with this environment.
+# --skip-setup skips interactive API key wizard.
+# --non-interactive suppresses all prompts.
+# Dashboard will be available on port 9119 via: nastech web --port 9119
+#
+# Note: the env var is exported into the shell that runs the installer,
+# not just for curl, by piping through 'env TERMUX_VERSION=1 bash'.
+curl -fsSL https://raw.githubusercontent.com/nastechai/nastech-agent/main/scripts/install.sh \
+  | env TERMUX_VERSION=1 bash -s -- --skip-setup --non-interactive --no-skills 2>&1 || {
+    echo "[setup] WARNING: Nastech install failed, continuing anyway"
+}
+echo "[setup] Nastech: $(nastech --version 2>/dev/null || echo 'installed (check ~/.nastech/)')"
+
 echo "[setup] Setup complete!"

@@ -74,6 +74,17 @@
           <IconTablerExternalLink class="openclaw-dashboard-icon" />
           <span class="openclaw-dashboard-label">OpenClaw Dashboard</span>
         </a>
+
+        <a
+          v-if="!isSidebarCollapsed"
+          class="nastech-dashboard-link"
+          :href="nastechDashboardUrl"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          <IconTablerExternalLink class="nastech-dashboard-icon" />
+          <span class="nastech-dashboard-label">Nastech Dashboard</span>
+        </a>
       </section>
     </template>
 
@@ -174,6 +185,10 @@ import type { ReasoningEffort, ThreadScrollState } from './types/codex'
 const SIDEBAR_COLLAPSED_STORAGE_KEY = 'codex-web-local.sidebar-collapsed.v1'
 const openClawDashboardUrl = computed(() => {
   return `http://localhost:19001/?gatewayUrl=ws://localhost:18789`
+})
+
+const nastechDashboardUrl = computed(() => {
+  return `http://localhost:9119`
 })
 
 const {
@@ -657,6 +672,18 @@ async function submitFirstMessageForNewThread(
 }
 
 .openclaw-dashboard-label {
+  @apply truncate;
+}
+
+.nastech-dashboard-link {
+  @apply mx-2 mb-1 flex items-center gap-2 rounded-md px-2.5 py-2 text-sm font-medium text-emerald-700 bg-emerald-50 border border-emerald-200 transition no-underline hover:bg-emerald-100 hover:border-emerald-300;
+}
+
+.nastech-dashboard-icon {
+  @apply w-4 h-4 shrink-0;
+}
+
+.nastech-dashboard-label {
   @apply truncate;
 }
 

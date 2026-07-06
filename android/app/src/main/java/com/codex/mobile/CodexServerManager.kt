@@ -23,12 +23,14 @@ class CodexServerManager(private val context: Context) {
         private const val CODEX_VERSION = "0.104.0"
         const val OPENCLAW_GATEWAY_PORT = 18789
         const val OPENCLAW_CONTROL_UI_PORT = 19001
+        const val NASTECH_PORT = 9119
     }
 
     private var serverProcess: Process? = null
     private var proxyProcess: Process? = null
     private var openClawGatewayProcess: Process? = null
     private var openClawControlUiProcess: Process? = null
+    private var nastechProcess: Process? = null
 
     val isRunning: Boolean
         get() {
@@ -1376,22 +1378,27 @@ WEOF
     }
 
     fun stopServer() {
-        val proc = serverProcess ?: return
+        // Always clean up all child processes, even if serverProcess was never started.
+        // Nastech and OpenClaw are started before startServer(), so they must be
+        // stopped regardless of whether the main server process ever ran.
+        val proc = serverProcess
         serverProcess = null
 
-        try {
-            proc.destroy()
-        } catch (e: Exception) {
-            Log.w(TAG, "Error destroying server process: ${e.message}")
-        }
-
-        try {
-            proc.waitFor()
-        } catch (_: InterruptedException) {
-            Thread.currentThread().interrupt()
+        if (proc != null) {
+            try {
+                proc.destroy()
+            } catch (e: Exception) {
+                Log.w(TAG, "Error destroying server process: ${e.message}")
+            }
+            try {
+                proc.waitFor()
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+            }
         }
 
         stopOpenClaw()
+        stopNastech()
         stopProxy()
         Log.i(TAG, "Server stopped")
     }
@@ -1401,6 +1408,177 @@ WEOF
         openClawGatewayProcess = null
         openClawControlUiProcess?.destroy()
         openClawControlUiProcess = null
+    }
+
+    // ── Nastech Agent ────────────────────────────────────────────────────────
+
+    /**
+     * Check whether the Nastech Agent is installed.
+     * Looks for the nastech binary in all known locations:
+     *   1. ~/.nastech/nastech-agent/.venv/bin/nastech  (venv install, Termux/pip path)
+     *   2. $PREFIX/bin/nastech                          (wrapper script we create)
+     *   3. /usr/local/bin/nastech                       (FHS root install via proot)
+     */
+    fun isNastechInstalled(): Boolean {
+        val paths = BootstrapInstaller.getPaths(context)
+        return findNastechBin(paths) != null
+    }
+
+    private fun findNastechBin(paths: BootstrapInstaller.Paths): String? {
+        val candidates = listOf(
+            "${paths.homeDir}/.nastech/nastech-agent/.venv/bin/nastech",
+            "${paths.prefixDir}/bin/nastech",
+            "/usr/local/bin/nastech",
+            "${paths.homeDir}/.local/bin/nastech",
+        )
+        return candidates.firstOrNull { java.io.File(it).exists() }
+    }
+
+    /**
+     * Install the Nastech Agent using the official install script.
+     *
+     * Uses TERMUX_VERSION=1 to trigger the pip/venv install path (no uv),
+     * which is compatible with our Termux prefix Python environment.
+     * Installs to $HOME/.nastech/nastech-agent/ and creates a wrapper
+     * script at $PREFIX/bin/nastech for easy access from runInPrefix().
+     *
+     * The installer is run non-interactively (--skip-setup --non-interactive)
+     * so it never blocks waiting for user input.
+     */
+    fun installNastech(onProgress: (String) -> Unit): Boolean {
+        val paths = BootstrapInstaller.getPaths(context)
+
+        // Skip if already installed (e.g. user installed manually in proot terminal)
+        if (isNastechInstalled()) {
+            Log.i(TAG, "Nastech already installed at ${findNastechBin(paths)}")
+            ensureNastechWrapperScript(paths)
+            return true
+        }
+
+        onProgress("Downloading Nastech Agent installer…")
+
+        // TERMUX_VERSION=1 triggers the pip/venv branch of the installer
+        // (matching our Termux Python install rather than requiring uv).
+        // --skip-setup skips the interactive API key wizard.
+        // --non-interactive suppresses all prompts.
+        // --no-skills starts with a clean skill slate.
+        val installCmd = """
+            export TERMUX_VERSION=1
+            export NASTECH_HOME="${paths.homeDir}/.nastech"
+            curl -fsSL https://raw.githubusercontent.com/nastechai/nastech-agent/main/scripts/install.sh \
+              | env TERMUX_VERSION=1 bash -s -- --skip-setup --non-interactive --no-skills 2>&1
+        """.trimIndent()
+
+        val code = runInPrefix(installCmd, onOutput = { onProgress(it) })
+        if (code != 0) {
+            Log.w(TAG, "Nastech install script exited with code $code (may still be usable)")
+        }
+
+        // Create a $PREFIX/bin/nastech wrapper so runInPrefix() can find it
+        ensureNastechWrapperScript(paths)
+
+        val installed = isNastechInstalled()
+        Log.i(TAG, "Nastech install result: installed=$installed")
+        return installed
+    }
+
+    /**
+     * Create a thin wrapper script at $PREFIX/bin/nastech pointing to
+     * wherever the actual nastech binary was installed.
+     */
+    private fun ensureNastechWrapperScript(paths: BootstrapInstaller.Paths) {
+        val wrapper = java.io.File("${paths.prefixDir}/bin/nastech")
+        if (wrapper.exists()) return // already have one
+
+        val actualBin = findNastechBin(paths) ?: return
+        if (actualBin == "${paths.prefixDir}/bin/nastech") return // would be circular
+
+        wrapper.writeText(
+            "#!/${paths.prefixDir}/bin/sh\nexec $actualBin \"\$@\"\n"
+        )
+        wrapper.setExecutable(true)
+        Log.i(TAG, "Created nastech wrapper at $wrapper -> $actualBin")
+    }
+
+    /**
+     * Start the Nastech Agent web dashboard on [NASTECH_PORT] (9119).
+     * Mirrors the OpenClaw gateway start pattern: spawn a background process
+     * and stream its output to logcat under the [nastech] tag.
+     *
+     * Command: nastech web --port 9119
+     */
+    fun startNastech(): Boolean {
+        // Check if already running
+        nastechProcess?.let { proc ->
+            return try {
+                proc.exitValue()
+                nastechProcess = null
+                false // exited, fall through to restart
+            } catch (_: IllegalThreadStateException) {
+                Log.i(TAG, "Nastech already running on port $NASTECH_PORT")
+                true
+            }
+        }
+
+        val paths = BootstrapInstaller.getPaths(context)
+        val nastechBin = findNastechBin(paths)
+        if (nastechBin == null) {
+            Log.w(TAG, "Nastech binary not found — skipping start")
+            return false
+        }
+
+        val env = buildEnvironment(paths).toMutableMap()
+        env["NASTECH_HOME"] = "${paths.homeDir}/.nastech"
+
+        val shell = "${paths.prefixDir}/bin/sh"
+        // Use 'nastech web --port PORT' for the dashboard server.
+        // Falls back to running nastech directly if 'web' subcommand is unavailable.
+        val cmd = "exec $nastechBin web --port $NASTECH_PORT 2>&1"
+
+        Log.i(TAG, "Starting Nastech: $cmd")
+
+        val pb = ProcessBuilder(shell, "-c", cmd)
+        pb.environment().clear()
+        pb.environment().putAll(env)
+        pb.directory(java.io.File(paths.homeDir))
+        pb.redirectErrorStream(true)
+
+        val proc = pb.start()
+        nastechProcess = proc
+
+        Thread {
+            val reader = BufferedReader(InputStreamReader(proc.inputStream))
+            var line = reader.readLine()
+            while (line != null) {
+                Log.d(TAG, "[nastech] $line")
+                line = reader.readLine()
+            }
+            Log.i(TAG, "Nastech exited with code: ${proc.waitFor()}")
+        }.start()
+
+        // Give nastech a moment to start, then verify it's still alive
+        Thread.sleep(3000)
+
+        val stillAlive = try {
+            proc.exitValue() // throws if still running
+            Log.w(TAG, "Nastech exited immediately after start — check logs")
+            false
+        } catch (_: IllegalThreadStateException) {
+            true
+        }
+
+        if (!stillAlive) {
+            nastechProcess = null
+            return false
+        }
+
+        Log.i(TAG, "Nastech Agent running on port $NASTECH_PORT")
+        return true
+    }
+
+    fun stopNastech() {
+        nastechProcess?.destroy()
+        nastechProcess = null
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────

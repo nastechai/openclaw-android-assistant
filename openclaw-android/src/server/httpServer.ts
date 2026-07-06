@@ -16,6 +16,8 @@ export type ServerInstance = {
   dispose: () => void
 }
 
+const NASTECH_PORT = 9119
+
 export function createServer(options: ServerOptions = {}): ServerInstance {
   const app = express()
   const bridge = createCodexBridgeMiddleware()
@@ -28,10 +30,19 @@ export function createServer(options: ServerOptions = {}): ServerInstance {
   // 2. Bridge middleware for /codex-api/*
   app.use(bridge)
 
-  // 3. Static files from Vue build
+  // 3. Nastech Agent API — status and dashboard URL
+  app.get('/api/nastech/status', (_req, res) => {
+    res.json({
+      port: NASTECH_PORT,
+      url: `http://127.0.0.1:${NASTECH_PORT}`,
+      dashboardUrl: `http://localhost:${NASTECH_PORT}`,
+    })
+  })
+
+  // 4. Static files from Vue build
   app.use(express.static(distDir))
 
-  // 4. SPA fallback
+  // 5. SPA fallback
   app.use((_req, res) => {
     res.sendFile(join(distDir, 'index.html'))
   })

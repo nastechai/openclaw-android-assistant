@@ -171,6 +171,17 @@ class MainActivity : AppCompatActivity() {
         // Step 2c: Install bionic-compat.js (Android platform shim for Node.js)
         serverManager.ensureBionicCompat()
 
+        // Step 2e: Install Nastech Agent (non-fatal — boot continues even if install fails)
+        if (!serverManager.isNastechInstalled()) {
+            updateStatus("Installing Nastech Agent…", "This may take a few minutes")
+            val nastechOk = serverManager.installNastech { msg -> updateDetail(msg) }
+            if (!nastechOk) {
+                Log.w(TAG, "Nastech install failed — continuing without it")
+            } else {
+                updateStatus("Nastech Agent installed")
+            }
+        }
+
         // Step 2d: Install OpenClaw
         if (!serverManager.isOpenClawInstalled()) {
             updateStatus("Installing build dependencies…")
@@ -265,6 +276,12 @@ class MainActivity : AppCompatActivity() {
 
             updateStatus("Starting OpenClaw Control UI…")
             serverManager.startOpenClawControlUiServer()
+        }
+
+        // Step 7c: Start Nastech Agent dashboard
+        if (serverManager.isNastechInstalled()) {
+            updateStatus("Starting Nastech Agent…", "Dashboard on port ${CodexServerManager.NASTECH_PORT}")
+            serverManager.startNastech()
         }
 
         // Step 8: Start web server
