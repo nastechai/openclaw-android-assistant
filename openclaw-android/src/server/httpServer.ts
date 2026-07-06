@@ -22,6 +22,7 @@ const NASTECH_PORT = 9119
 
 // ── Nastech gateway process (owned by this server instance) ───────────────
 let nastechGatewayProc: ChildProcess | null = null
+let gatewayStarting = false  // mutex — prevents concurrent spawn races
 
 function isPortOpen(port: number, host = '127.0.0.1'): Promise<boolean> {
   return new Promise((resolve) => {
@@ -85,37 +86,80 @@ export function createServer(options: ServerOptions = {}): ServerInstance {
   /**
    * POST /api/nastech/gateway/start
    * Starts `nastech gateway` as a child process if not already running.
+   * Waits up to 4 s for the port to open before responding, so the client
+   * gets a meaningful success/failure rather than an optimistic "starting…".
    */
   app.post('/api/nastech/gateway/start', async (_req, res) => {
-    // If port is already open (started by Android), report success immediately
-    const alreadyOpen = await isPortOpen(NASTECH_PORT)
-    if (alreadyOpen) {
+    // Already open (could be Android-started)
+    if (await isPortOpen(NASTECH_PORT)) {
       return res.json({ ok: true, message: `Gateway already running on :${NASTECH_PORT}` })
     }
 
-    if (isGatewayAlive()) {
-      return res.json({ ok: true, message: 'Gateway starting up…' })
+    // Mutex — reject concurrent start requests
+    if (gatewayStarting || isGatewayAlive()) {
+      return res.json({ ok: true, message: 'Gateway start already in progress…' })
     }
 
+    gatewayStarting = true
     try {
       const nastechBin = process.env['NASTECH_BIN'] ?? 'nastech'
-      const proc = spawn(nastechBin, ['gateway'], {
-        detached: false,
-        env: { ...process.env, NASTECH_GATEWAY_PORT: String(NASTECH_PORT) },
-        stdio: 'ignore',
+
+      // Wrap spawn in a promise so we can catch synchronous AND first-tick errors
+      const spawnResult = await new Promise<{ ok: boolean; error?: string }>((resolve) => {
+        let settled = false
+        const proc = spawn(nastechBin, ['gateway'], {
+          detached: false,
+          env: { ...process.env, NASTECH_GATEWAY_PORT: String(NASTECH_PORT) },
+          stdio: 'ignore',
+        })
+
+        // Error event fires when the binary can't be found / exec fails
+        proc.once('error', (err) => {
+          if (!settled) { settled = true; resolve({ ok: false, error: err.message }) }
+          nastechGatewayProc = null
+        })
+
+        // Immediate exit (bad binary, permission error)
+        proc.once('exit', (code) => {
+          console.log('[nastech] gateway exited with code', code)
+          if (!settled && code !== 0) {
+            settled = true
+            resolve({ ok: false, error: `Process exited with code ${code ?? 'null'}` })
+          }
+          nastechGatewayProc = null
+        })
+
+        nastechGatewayProc = proc
+
+        // If no error within 500 ms, assume spawn succeeded
+        setTimeout(() => {
+          if (!settled) { settled = true; resolve({ ok: true }) }
+        }, 500)
       })
-      proc.once('error', (err) => {
-        console.error('[nastech] spawn error:', err.message)
+
+      if (!spawnResult.ok) {
         nastechGatewayProc = null
+        return res.status(500).json({ ok: false, error: spawnResult.error ?? 'Spawn failed' })
+      }
+
+      // Wait up to 4 s for the port to open and give a definitive answer
+      let running = false
+      for (let i = 0; i < 8; i++) {
+        await new Promise(r => setTimeout(r, 500))
+        if (await isPortOpen(NASTECH_PORT)) { running = true; break }
+      }
+
+      return res.json({
+        ok: running,
+        message: running
+          ? `Gateway listening on :${NASTECH_PORT}`
+          : 'Gateway started but port not open yet — give it a moment',
       })
-      proc.once('exit', (code) => {
-        console.log('[nastech] gateway exited with code', code)
-        nastechGatewayProc = null
-      })
-      nastechGatewayProc = proc
-      return res.json({ ok: true, message: 'Gateway starting…' })
     } catch (err) {
+      nastechGatewayProc = null
       return res.status(500).json({ ok: false, error: String(err) })
+    } finally {
+      gatewayStarting = false
     }
   })
 
@@ -145,23 +189,39 @@ export function createServer(options: ServerOptions = {}): ServerInstance {
    * POST /api/nastech/setup
    * Runs `nastech setup --skip-gateway` in the background.
    * Non-interactive flags are used since there is no terminal.
+   * Reports failure if the binary can't be launched at all.
    */
   app.post('/api/nastech/setup', (_req, res) => {
-    try {
-      const nastechBin = process.env['NASTECH_BIN'] ?? 'nastech'
-      const proc = spawn(nastechBin, ['setup', '--skip-gateway', '--non-interactive'], {
-        detached: true,
-        env: { ...process.env, NASTECH_HOME: process.env['NASTECH_HOME'] ?? `${process.env['HOME']}/.nastech` },
-        stdio: 'ignore',
-      })
-      proc.unref()
-      return res.json({
-        ok: true,
-        message: 'Setup running in background — check ~/.nastech/ for config files',
-      })
-    } catch (err) {
-      return res.status(500).json({ ok: false, error: String(err) })
-    }
+    const nastechBin = process.env['NASTECH_BIN'] ?? 'nastech'
+    let settled = false
+
+    const proc = spawn(nastechBin, ['setup', '--skip-gateway', '--non-interactive'], {
+      detached: true,
+      env: {
+        ...process.env,
+        NASTECH_HOME: process.env['NASTECH_HOME'] ?? `${process.env['HOME'] ?? '/root'}/.nastech`,
+      },
+      stdio: 'ignore',
+    })
+
+    proc.once('error', (err) => {
+      if (!settled) {
+        settled = true
+        res.status(500).json({ ok: false, error: `Cannot launch nastech: ${err.message}` })
+      }
+    })
+
+    // Give the process 400 ms to fail; if it hasn't, assume it's running fine
+    setTimeout(() => {
+      if (!settled) {
+        settled = true
+        proc.unref()
+        res.json({
+          ok: true,
+          message: 'Setup running in background — config saves to ~/.nastech/',
+        })
+      }
+    }, 400)
   })
 
   // 4. Static files from Vue build

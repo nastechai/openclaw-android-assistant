@@ -326,6 +326,8 @@ async function pingDashboard(): Promise<void> {
 </script>
 
 <style scoped>
+@reference "tailwindcss";
+
 /* ── Panel wrapper ──────────────────────────────────────────────────────── */
 .nastech-panel {
   @apply mx-2 mb-1 rounded-lg border border-emerald-200 bg-emerald-50 overflow-hidden;
