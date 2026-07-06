@@ -87,7 +87,7 @@ jobs:
         run: cp android/app/build/outputs/apk/release/app-release.apk android/app/build/outputs/apk/release/anyclaw.apk
 
       - name: Upload APK artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: anyclaw
           path: android/app/build/outputs/apk/release/anyclaw.apk
