@@ -1,5 +1,5 @@
 {
-  "originHash" : "4f7b315ce0e0a16d150d8d74dce445628c03d8926485ad2f5595e091b4d33440",
+  "originHash" : "638bd7099050859d3cab2a74f187a64659659ab057757b735e1200c766fea9f3",
   "pins" : [
     {
       "identity" : "axorcist",
@@ -42,8 +42,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/steipete/Peekaboo.git",
       "state" : {
-        "revision" : "1fa8eead7eeac3ff618a3111fc333ae78db043d2",
-        "version" : "3.5.2"
+        "revision" : "521703e21c6ce0337f2b407dceb228c6233fa698",
+        "version" : "3.6.0"
       }
     },
     {
@@ -51,8 +51,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/sparkle-project/Sparkle",
       "state" : {
-        "revision" : "d46d456107feacc80711b21847b82b07bd9fb46e",
-        "version" : "2.9.3"
+        "revision" : "b6496a74a087257ef5e6da1c5b29a447a60f5bd7",
+        "version" : "2.9.4"
       }
     },
     {
@@ -69,8 +69,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/pointfreeco/swift-concurrency-extras",
       "state" : {
-        "revision" : "5a3825302b1a0d744183200915a47b508c828e6f",
-        "version" : "1.3.2"
+        "revision" : "a90e2e40a7a840a853dd29e57cbef5dbb72c9d5b",
+        "version" : "1.4.0"
       }
     },
     {
@@ -78,8 +78,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/apple/swift-log.git",
       "state" : {
-        "revision" : "92448c359f00ebe36ae97d3bd9086f13c7692b5a",
-        "version" : "1.13.2"
+        "revision" : "a878e7f8f46cfc0e1125e565b5c08e7d5272dc9a",
+        "version" : "1.14.0"
       }
     },
     {
