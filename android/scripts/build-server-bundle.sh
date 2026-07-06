@@ -16,40 +16,43 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ANDROID_DIR="$(dirname "$SCRIPT_DIR")"
 PROJECT_ROOT="$(dirname "$ANDROID_DIR")"
 
+# The Vue frontend + Express CLI live in openclaw-android/
+OPENCLAW_DIR="$PROJECT_ROOT/openclaw-android"
+
 ASSETS_DIR="$ANDROID_DIR/app/src/main/assets/server-bundle"
 
 echo "=== Building codex-web-local ==="
 
-cd "$PROJECT_ROOT"
+cd "$OPENCLAW_DIR"
 
 # Install dependencies if needed
 if [ ! -d "node_modules" ]; then
-    echo "Installing npm dependencies..."
+    echo "Installing npm dependencies in openclaw-android/..."
     npm install
 fi
 
 # Build frontend (Vue) and CLI (Express server)
-echo "Building frontend..."
+echo "Building frontend (Vue)..."
 npm run build:frontend
 
-echo "Building CLI server..."
+echo "Building CLI server (tsup)..."
 npm run build:cli
 
-# Copy the built artifacts into assets
+# Copy the built artifacts into APK assets
 echo "Copying build artifacts to Android assets..."
 rm -rf "$ASSETS_DIR"
 mkdir -p "$ASSETS_DIR/dist"
 mkdir -p "$ASSETS_DIR/dist-cli"
 
-cp -r "$PROJECT_ROOT/dist/"* "$ASSETS_DIR/dist/"
-cp -r "$PROJECT_ROOT/dist-cli/"* "$ASSETS_DIR/dist-cli/"
-cp "$PROJECT_ROOT/package.json" "$ASSETS_DIR/package.json"
+cp -r "$OPENCLAW_DIR/dist/"*     "$ASSETS_DIR/dist/"
+cp -r "$OPENCLAW_DIR/dist-cli/"* "$ASSETS_DIR/dist-cli/"
+cp    "$OPENCLAW_DIR/package.json" "$ASSETS_DIR/package.json"
 
 # Install production dependencies into the bundle
 echo "Installing production dependencies for bundle..."
 cd "$ASSETS_DIR"
 npm install --omit=dev --ignore-scripts 2>/dev/null || true
-cd "$PROJECT_ROOT"
+cd "$OPENCLAW_DIR"
 
 echo ""
 echo "=== Server bundle ready ==="

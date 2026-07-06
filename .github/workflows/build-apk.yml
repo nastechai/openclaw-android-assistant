@@ -23,17 +23,15 @@ jobs:
         with:
           node-version: "21"
           cache: "npm"
+          cache-dependency-path: openclaw-android/package-lock.json
 
-      - name: Install npm dependencies
-        run: npm ci --ignore-scripts || npm install
+      - name: Install frontend dependencies
+        working-directory: openclaw-android
+        run: npm ci || npm install
 
-      - name: Build Vue frontend
-        run: npm run build:frontend
-
-      - name: Build CLI server
-        run: npm run build:cli
-
-      - name: Bundle server into APK assets
+      - name: Build Vue frontend + CLI server and bundle into APK assets
+        # build-server-bundle.sh installs deps, runs build:frontend + build:cli
+        # inside openclaw-android/, then copies artifacts to android/app/src/main/assets/
         run: bash android/scripts/build-server-bundle.sh
 
       - name: Download Termux bootstrap
@@ -51,7 +49,7 @@ jobs:
       # ── Signing ────────────────────────────────────────────────────────────
       # If ANDROID_KEYSTORE_BASE64 is set as a repo secret, decode it and pass
       # the path + passwords to Gradle so the release APK is fully signed.
-      # On first-time builds (no secret yet), fall back to the SDK debug key.
+      # On first-time builds (no secret yet), falls back to the SDK debug key.
       - name: Decode keystore (if secret present)
         id: keystore
         env:
