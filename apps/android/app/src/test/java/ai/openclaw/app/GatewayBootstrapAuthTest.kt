@@ -35,6 +35,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -49,6 +50,16 @@ import java.util.concurrent.atomic.AtomicLong
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
 class GatewayBootstrapAuthTest {
+  @Before
+  fun clearPlainPrefs() {
+    RuntimeEnvironment
+      .getApplication()
+      .getSharedPreferences("openclaw.node", android.content.Context.MODE_PRIVATE)
+      .edit()
+      .clear()
+      .commit()
+  }
+
   @Test
   fun standaloneStatusPreservesLiveOperatorConnection() {
     val runtime = createTestRuntime(RuntimeEnvironment.getApplication())
@@ -601,19 +612,17 @@ class GatewayBootstrapAuthTest {
       ),
     )
     prefs.gatewayRegistry.setActive(savedEndpoint.stableId)
-    prefs.saveGatewayCredentials(savedEndpoint.stableId, token = "shared-token")
+    prefs.saveGatewayCredentials(savedEndpoint.stableId, token = "initial-token")
     val runtime = NodeRuntime(app, prefs)
 
-    runtime.connect(
-      GatewayEndpoint.manual(host = "127.0.0.1", port = 18789),
-      NodeRuntime.GatewayConnectAuth(token = "initial-token", bootstrapToken = null, password = null),
-    )
+    waitForDesiredConnection(runtime, "nodeSession")
+    prefs.saveGatewayCredentials(savedEndpoint.stableId, token = "shared-token")
     runtime.disconnect()
     assertNull(desiredConnection(runtime, "nodeSession"))
 
     runtime.refreshGatewayConnection()
 
-    val desired = desiredConnection(runtime, "nodeSession") ?: error("Expected desired node connection")
+    val desired = waitForDesiredConnection(runtime, "nodeSession")
     val endpoint = readField<GatewayEndpoint>(desired, "endpoint")
     assertEquals("127.0.0.1", endpoint.host)
     assertEquals(18789, endpoint.port)
@@ -1182,6 +1191,17 @@ class GatewayBootstrapAuthTest {
   ): Any? {
     val session = readField<GatewaySession>(runtime, sessionFieldName)
     return readField(session, "desired")
+  }
+
+  private fun waitForDesiredConnection(
+    runtime: NodeRuntime,
+    sessionFieldName: String,
+  ): Any {
+    repeat(50) {
+      desiredConnection(runtime, sessionFieldName)?.let { return it }
+      Thread.sleep(10)
+    }
+    error("Expected desired connection for $sessionFieldName")
   }
 
   private fun invokeMaybeStartOperatorSessionAfterNodeConnect(
