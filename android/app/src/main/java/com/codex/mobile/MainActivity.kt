@@ -150,11 +150,9 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // Done — user starts the gateway manually
+        // Installations complete — user starts Nastech manually
         runOnUiThread {
             showLoading(false)
-            webView.visibility = View.VISIBLE
-            webView.loadUrl("http://127.0.0.1:${CodexServerManager.NASTECH_PORT}/")
         }
     }
 
