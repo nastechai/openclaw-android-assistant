@@ -6,13 +6,15 @@ import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
 import android.provider.Settings
+import android.text.SpannableStringBuilder
 import android.util.Log
+import android.view.KeyEvent
 import android.view.View
-import android.webkit.ConsoleMessage
-import android.webkit.WebChromeClient
-import android.webkit.WebView
-import android.webkit.WebViewClient
-import android.widget.ProgressBar
+import android.view.inputmethod.EditorInfo
+import android.widget.EditText
+import android.widget.ImageButton
+import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.TextView
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
@@ -21,38 +23,56 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         private const val TAG = "MainActivity"
+        // Maximum characters kept in the terminal buffer before trimming
+        private const val MAX_BUFFER = 150_000
     }
 
-    private lateinit var webView: WebView
     private lateinit var loadingOverlay: View
     private lateinit var statusText: TextView
     private lateinit var statusDetail: TextView
-    private lateinit var progressBar: ProgressBar
+    private lateinit var terminalLayout: LinearLayout
+    private lateinit var scrollView: ScrollView
+    private lateinit var terminalOutput: TextView
+    private lateinit var inputField: EditText
+    private lateinit var enterButton: ImageButton
+
     private lateinit var serverManager: CodexServerManager
+    private val session = lazy { TerminalSession(this) }
+
+    // ANSI parser state (persists across output chunks)
+    private val termBuffer   = SpannableStringBuilder()
+    private val ansiColor    = intArrayOf(-1)   // -1 = default
+    private val ansiBold     = booleanArrayOf(false)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
-        webView = findViewById(R.id.webView)
-        loadingOverlay = findViewById(R.id.loadingOverlay)
-        statusText = findViewById(R.id.statusText)
-        statusDetail = findViewById(R.id.statusDetail)
-        progressBar = findViewById(R.id.progressBar)
+        loadingOverlay  = findViewById(R.id.loadingOverlay)
+        statusText      = findViewById(R.id.statusText)
+        statusDetail    = findViewById(R.id.statusDetail)
+        terminalLayout  = findViewById(R.id.terminalLayout)
+        scrollView      = findViewById(R.id.scrollView)
+        terminalOutput  = findViewById(R.id.terminalOutput)
+        inputField      = findViewById(R.id.inputField)
+        enterButton     = findViewById(R.id.enterButton)
 
         serverManager = CodexServerManager(this)
 
         requestBatteryOptimizationExemption()
         startForegroundService()
-        setupWebView()
+        setupInput()
         startSetupFlow()
     }
 
     override fun onDestroy() {
         super.onDestroy()
+        if (session.isInitialized()) session.value.stop()
         serverManager.stopServer()
         stopService(Intent(this, CodexForegroundService::class.java))
     }
+
+    // ── Battery optimisation ────────────────────────────────────────────────
 
     private fun requestBatteryOptimizationExemption() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
@@ -60,55 +80,48 @@ class MainActivity : AppCompatActivity() {
         if (pm.isIgnoringBatteryOptimizations(packageName)) return
         try {
             @Suppress("BatteryLife")
-            val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
-                data = Uri.parse("package:$packageName")
-            }
-            startActivity(intent)
+            startActivity(
+                Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                    data = Uri.parse("package:$packageName")
+                }
+            )
         } catch (e: Exception) {
-            Log.w(TAG, "Could not request battery optimization exemption: ${e.message}")
+            Log.w(TAG, "Battery exemption: ${e.message}")
         }
     }
 
     private fun startForegroundService() {
         val intent = Intent(this, CodexForegroundService::class.java)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
             startForegroundService(intent)
-        } else {
+        else
             startService(intent)
-        }
     }
 
-    @Deprecated("Use onBackPressedDispatcher")
-    override fun onBackPressed() {
-        if (webView.canGoBack()) {
-            webView.goBack()
-        } else {
-            @Suppress("DEPRECATION")
-            super.onBackPressed()
-        }
-    }
+    // ── Input handling ──────────────────────────────────────────────────────
 
-    @android.annotation.SuppressLint("SetJavaScriptEnabled")
-    private fun setupWebView() {
-        webView.settings.apply {
-            javaScriptEnabled = true
-            domStorageEnabled = true
-            databaseEnabled = true
-            allowFileAccess = false
-            setSupportZoom(false)
-        }
-
-        webView.webViewClient = object : WebViewClient() {
-            override fun shouldOverrideUrlLoading(view: WebView, url: String): Boolean = false
-        }
-
-        webView.webChromeClient = object : WebChromeClient() {
-            override fun onConsoleMessage(msg: ConsoleMessage): Boolean {
-                Log.d(TAG, "[WebView] ${msg.sourceId()}:${msg.lineNumber()} ${msg.message()}")
-                return true
+    private fun setupInput() {
+        val send: () -> Unit = {
+            val text = inputField.text.toString()
+            inputField.text.clear()
+            if (session.isInitialized()) {
+                session.value.write(text + "\n")
             }
         }
+
+        enterButton.setOnClickListener { send() }
+
+        inputField.setOnEditorActionListener { _, actionId, event ->
+            if (actionId == EditorInfo.IME_ACTION_SEND ||
+                (event?.keyCode == KeyEvent.KEYCODE_ENTER && event.action == KeyEvent.ACTION_DOWN)
+            ) {
+                send()
+                true
+            } else false
+        }
     }
+
+    // ── Setup flow ──────────────────────────────────────────────────────────
 
     private fun startSetupFlow() {
         showLoading(true)
@@ -125,48 +138,65 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun runSetup() {
-        // Step 1: Extract bootstrap
+        val paths = BootstrapInstaller.getPaths(this)
+
+        // Step 1: Termux bootstrap
         if (!BootstrapInstaller.isBootstrapInstalled(this)) {
             updateStatus("Extracting environment…")
-            BootstrapInstaller.install(this) { msg -> updateStatus(msg) }
+            BootstrapInstaller.install(this) { updateStatus(it) }
         }
-        updateStatus("Environment ready")
 
-        // Step 2: Install proot (needed for package management path remapping)
+        // Step 2: proot (needed for Alpine chroot)
         if (!serverManager.isProotInstalled()) {
             updateStatus("Installing proot…")
-            val ok = serverManager.installProot { msg -> updateDetail(msg) }
-            if (!ok) throw RuntimeException("Failed to install proot")
+            if (!serverManager.installProot { updateDetail(it) })
+                throw RuntimeException("Failed to install proot")
         }
 
-        // Step 3: Install Nastech
+        // Step 3: Nastech install (in Termux bootstrap env)
         if (!serverManager.isNastechInstalled()) {
             updateStatus("Installing Nastech…", "This may take a few minutes")
-            val ok = serverManager.installNastech { msg -> updateDetail(msg) }
-            if (!ok) {
-                Log.w(TAG, "Nastech install returned false — attempting to start anyway")
-            } else {
-                updateStatus("Nastech installed")
-            }
+            serverManager.installNastech { updateDetail(it) }
         }
 
-        // Step 4: Start terminal (pty server)
-        updateStatus("Starting terminal…")
-        serverManager.startPtyServer()
+        // Step 4: Alpine Linux rootfs
+        if (!DistroInstaller.isInstalled(this)) {
+            updateStatus("Downloading Alpine Linux…", "Full OS ~5 MB")
+            if (!DistroInstaller.install(this, paths.prefixDir) { updateDetail(it) })
+                throw RuntimeException("Failed to install Alpine Linux")
+        }
 
-        updateStatus("Waiting for terminal…")
-        val termReady = serverManager.waitForPtyServer(30_000)
-        if (!termReady) throw RuntimeException("Terminal server did not start")
+        // Step 5: Start terminal session
+        updateStatus("Launching terminal…")
+        val sess = session.value
+        sess.onOutput = { raw -> runOnUiThread { appendOutput(raw) } }
 
-        // Step 5: Show terminal — user runs everything from here
+        if (!sess.start()) throw RuntimeException("Failed to start shell session")
+
+        // Show terminal
         runOnUiThread {
             showLoading(false)
-            webView.visibility = View.VISIBLE
-            webView.loadUrl("http://127.0.0.1:${CodexServerManager.PTY_SERVER_PORT}/")
+            terminalLayout.visibility = View.VISIBLE
+            inputField.requestFocus()
         }
     }
 
-    // ── UI helpers ─────────────────────────────────────────────────────────
+    // ── Terminal output ─────────────────────────────────────────────────────
+
+    private fun appendOutput(raw: String) {
+        AnsiParser.append(raw, termBuffer, ansiColor, ansiBold)
+
+        // Trim oldest content when buffer grows too large
+        if (termBuffer.length > MAX_BUFFER) {
+            val keep = (MAX_BUFFER * 0.75).toInt()
+            termBuffer.delete(0, termBuffer.length - keep)
+        }
+
+        terminalOutput.text = termBuffer
+        scrollView.post { scrollView.fullScroll(ScrollView.FOCUS_DOWN) }
+    }
+
+    // ── UI helpers ──────────────────────────────────────────────────────────
 
     private fun showError(message: String) {
         AlertDialog.Builder(this)
@@ -179,7 +209,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showLoading(show: Boolean) {
-        loadingOverlay.visibility = if (show) View.VISIBLE else View.GONE
+        loadingOverlay.visibility  = if (show) View.VISIBLE else View.GONE
     }
 
     private fun setStatus(text: String, detail: String? = null) {
@@ -192,14 +222,11 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun updateStatus(text: String, detail: String? = null) {
+    private fun updateStatus(text: String, detail: String? = null) =
         runOnUiThread { setStatus(text, detail) }
-    }
 
-    private fun updateDetail(text: String) {
-        runOnUiThread {
-            statusDetail.text = text
-            statusDetail.visibility = View.VISIBLE
-        }
+    private fun updateDetail(text: String) = runOnUiThread {
+        statusDetail.text = text
+        statusDetail.visibility = View.VISIBLE
     }
 }
