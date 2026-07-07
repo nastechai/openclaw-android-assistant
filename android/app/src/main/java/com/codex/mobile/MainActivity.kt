@@ -150,17 +150,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // Step 4: Start Nastech gateway
-        updateStatus("Starting Nastech…")
-        val started = serverManager.startNastech()
-        if (!started) throw RuntimeException("Failed to start Nastech gateway")
-
-        // Step 5: Wait for dashboard on port 9119
-        updateStatus("Waiting for Nastech dashboard…")
-        val ready = serverManager.waitForNastech(90_000)
-        if (!ready) throw RuntimeException("Nastech dashboard did not become ready on port 9119")
-
-        // Step 6: Show dashboard
+        // Done — user starts the gateway manually
         runOnUiThread {
             showLoading(false)
             webView.visibility = View.VISIBLE
