@@ -1447,11 +1447,15 @@ WEOF
             return false
         }
 
-        onProgress("Setting up Nastech (uv venv)…")
-        // Use the Ubuntu/standard-Linux path in setup-nastech.sh.
-        // NASTECH_HOME tells the script where to store data.
+        onProgress("Setting up Nastech…")
+        // AnyClaw uses Termux bootstrap (bionic libc) so uv (glibc) won't run.
+        // TERMUX_VERSION=1 tells setup-nastech.sh to use stdlib venv + pip instead.
+        // PREFIX must be set so the script's is_termux() check passes and it
+        // symlinks `nastech` into $PREFIX/bin (our PATH).
         val setupCmd = """
             cd "$installDir"
+            export TERMUX_VERSION=1
+            export PREFIX="${paths.prefixDir}"
             export NASTECH_HOME="$nastechHome"
             export NASTECH_INSTALL_DIR="$installDir"
             bash setup-nastech.sh --skip-setup --skip-browser 2>&1
