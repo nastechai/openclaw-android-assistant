@@ -23,12 +23,14 @@ class CodexServerManager(private val context: Context) {
         private const val CODEX_VERSION = "0.104.0"
         const val OPENCLAW_GATEWAY_PORT = 18789
         const val OPENCLAW_CONTROL_UI_PORT = 19001
+        const val NASTECH_PORT = 9119
     }
 
     private var serverProcess: Process? = null
     private var proxyProcess: Process? = null
     private var openClawGatewayProcess: Process? = null
     private var openClawControlUiProcess: Process? = null
+    private var nastechProcess: Process? = null
 
     val isRunning: Boolean
         get() {
@@ -1376,21 +1378,21 @@ WEOF
     }
 
     fun stopServer() {
-        val proc = serverProcess ?: return
+        // Always clean up all child processes, even if the main server
+        // was never started or already exited.
+        val proc = serverProcess
         serverProcess = null
 
-        try {
-            proc.destroy()
-        } catch (e: Exception) {
-            Log.w(TAG, "Error destroying server process: ${e.message}")
+        if (proc != null) {
+            try { proc.destroy() } catch (e: Exception) {
+                Log.w(TAG, "Error destroying server process: ${e.message}")
+            }
+            try { proc.waitFor() } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+            }
         }
 
-        try {
-            proc.waitFor()
-        } catch (_: InterruptedException) {
-            Thread.currentThread().interrupt()
-        }
-
+        stopNastech()
         stopOpenClaw()
         stopProxy()
         Log.i(TAG, "Server stopped")
@@ -1401,6 +1403,122 @@ WEOF
         openClawGatewayProcess = null
         openClawControlUiProcess?.destroy()
         openClawControlUiProcess = null
+    }
+
+    // ── Nastech ───────────────────────────────────────────────────────────────
+
+    /**
+     * Returns true when the Nastech venv Python exists.
+     * Install dir follows nastechai/nastech-agent's resolve_install_layout:
+     *   $HOME/.nastech/nastech-agent/  (non-root Linux / Ubuntu path)
+     */
+    fun isNastechInstalled(): Boolean {
+        val paths = BootstrapInstaller.getPaths(context)
+        val venvPython = File("${paths.homeDir}/.nastech/nastech-agent/venv/bin/python")
+        return venvPython.exists()
+    }
+
+    /**
+     * Clone nastechai/nastech-agent and run setup-nastech.sh using the
+     * standard Ubuntu/Linux path (uv-managed venv). No TERMUX_VERSION set —
+     * the installer detects a plain Linux environment and uses uv.
+     *
+     * --skip-setup   : skip interactive API-key wizard (user configures later)
+     * --skip-browser : skip Playwright install (not needed on Android)
+     */
+    fun installNastech(onProgress: (String) -> Unit): Boolean {
+        val paths = BootstrapInstaller.getPaths(context)
+        val nastechHome = "${paths.homeDir}/.nastech"
+        val installDir  = "$nastechHome/nastech-agent"
+
+        onProgress("Cloning Nastech agent…")
+        val cloneCmd = """
+            mkdir -p "$nastechHome"
+            if [ ! -d "$installDir/.git" ]; then
+                git clone --depth=1 https://github.com/nastechai/nastech-agent.git "$installDir" 2>&1
+            else
+                cd "$installDir" && git pull --ff-only 2>&1 || true
+            fi
+        """.trimIndent()
+
+        val cloneCode = runInPrefix(cloneCmd) { onProgress(it) }
+        if (cloneCode != 0) {
+            Log.e(TAG, "Nastech clone failed with code $cloneCode")
+            return false
+        }
+
+        onProgress("Setting up Nastech (uv venv)…")
+        // Use the Ubuntu/standard-Linux path in setup-nastech.sh.
+        // NASTECH_HOME tells the script where to store data.
+        val setupCmd = """
+            cd "$installDir"
+            export NASTECH_HOME="$nastechHome"
+            export NASTECH_INSTALL_DIR="$installDir"
+            bash setup-nastech.sh --skip-setup --skip-browser 2>&1
+        """.trimIndent()
+
+        val setupCode = runInPrefix(setupCmd) { onProgress(it) }
+        if (setupCode != 0) {
+            Log.w(TAG, "Nastech setup exited $setupCode — checking if venv was created")
+        }
+
+        return isNastechInstalled()
+    }
+
+    /**
+     * Start `nastech gateway` via the venv Python.
+     * Port is fixed at NASTECH_PORT (9119) via NASTECH_GATEWAY_PORT env var.
+     */
+    fun startNastech(): Boolean {
+        // Already running?
+        nastechProcess?.let {
+            return try { it.exitValue(); false } catch (_: IllegalThreadStateException) { true }
+        }
+
+        if (!isNastechInstalled()) {
+            Log.w(TAG, "Nastech not installed — skipping start")
+            return false
+        }
+
+        val paths   = BootstrapInstaller.getPaths(context)
+        val python  = "${paths.homeDir}/.nastech/nastech-agent/venv/bin/python"
+        val workDir = "${paths.homeDir}/.nastech/nastech-agent"
+
+        val env = buildEnvironment(paths).toMutableMap()
+        env["NASTECH_HOME"]         = "${paths.homeDir}/.nastech"
+        env["NASTECH_GATEWAY_PORT"] = NASTECH_PORT.toString()
+
+        val pb = ProcessBuilder(python, "-m", "nastech_cli.main", "gateway")
+        pb.environment().clear()
+        pb.environment().putAll(env)
+        pb.directory(File(workDir))
+        pb.redirectErrorStream(true)
+
+        val proc = pb.start()
+        nastechProcess = proc
+
+        Thread {
+            val reader = BufferedReader(InputStreamReader(proc.inputStream))
+            var line = reader.readLine()
+            while (line != null) {
+                Log.d(TAG, "[nastech] $line")
+                line = reader.readLine()
+            }
+            Log.i(TAG, "Nastech exited with code: ${proc.waitFor()}")
+            nastechProcess = null
+        }.start()
+
+        Thread.sleep(3000)
+        val alive = nastechProcess?.let {
+            try { it.exitValue(); false } catch (_: IllegalThreadStateException) { true }
+        } ?: false
+        Log.i(TAG, "Nastech gateway started=$alive on :$NASTECH_PORT")
+        return alive
+    }
+
+    fun stopNastech() {
+        nastechProcess?.destroy()
+        nastechProcess = null
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────
