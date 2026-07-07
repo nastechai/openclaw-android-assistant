@@ -44,7 +44,7 @@ jobs:
              android/app/build/outputs/apk/debug/anyclaw.apk
 
       - name: Upload APK artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: anyclaw
           path: android/app/build/outputs/apk/debug/anyclaw.apk
