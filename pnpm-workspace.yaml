@@ -45,8 +45,6 @@ minimumReleaseAgeExclude:
   - "@microsoft/teams.cards@2.0.12"
   - "@microsoft/teams.common@2.0.12"
   - "@microsoft/teams.graph@2.0.12"
-  - "@openai/codex"
-  - "@openai/codex-*"
   - "@pierre/diffs@1.2.3"
   - "@smithy/shared-ini-file-loader@4.5.4"
   - "@typescript/native-preview*"

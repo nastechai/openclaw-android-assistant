@@ -12,7 +12,6 @@ import android.webkit.ConsoleMessage
 import android.webkit.WebChromeClient
 import android.webkit.WebView
 import android.webkit.WebViewClient
-import android.widget.EditText
 import android.widget.ProgressBar
 import android.widget.TextView
 import androidx.appcompat.app.AlertDialog
@@ -21,7 +20,7 @@ import androidx.appcompat.app.AppCompatActivity
 class MainActivity : AppCompatActivity() {
 
     companion object {
-        private const val TAG = "CodexMainActivity"
+        private const val TAG = "MainActivity"
     }
 
     private lateinit var webView: WebView
@@ -59,7 +58,6 @@ class MainActivity : AppCompatActivity() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
         val pm = getSystemService(PowerManager::class.java) ?: return
         if (pm.isIgnoringBatteryOptimizations(packageName)) return
-
         try {
             @Suppress("BatteryLife")
             val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
@@ -101,10 +99,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         webView.webViewClient = object : WebViewClient() {
-            override fun shouldOverrideUrlLoading(
-                view: WebView,
-                url: String,
-            ): Boolean = false
+            override fun shouldOverrideUrlLoading(view: WebView, url: String): Boolean = false
         }
 
         webView.webChromeClient = object : WebChromeClient() {
@@ -124,9 +119,7 @@ class MainActivity : AppCompatActivity() {
                 runSetup()
             } catch (e: Exception) {
                 Log.e(TAG, "Setup failed", e)
-                runOnUiThread {
-                    showError(e.message ?: "Unknown error")
-                }
+                runOnUiThread { showError(e.message ?: "Unknown error") }
             }
         }.start()
     }
@@ -139,224 +132,50 @@ class MainActivity : AppCompatActivity() {
         }
         updateStatus("Environment ready")
 
-        // Step 1b: Install proot (needed for dpkg/apt-get path remapping)
+        // Step 2: Install proot (needed for package management path remapping)
         if (!serverManager.isProotInstalled()) {
-            updateStatus("Installing proot…", "Needed for package management")
-            val prootOk = serverManager.installProot { msg -> updateDetail(msg) }
-            if (!prootOk) {
-                throw RuntimeException("Failed to install proot")
-            }
-        }
-        updateStatus("proot ready")
-
-        // Step 2: Install Node.js
-        if (!serverManager.isNodeInstalled()) {
-            updateStatus("Installing Node.js (first run)…", "This may take a few minutes")
-            val nodeOk = serverManager.installNode { msg -> updateDetail(msg) }
-            if (!nodeOk) {
-                throw RuntimeException("Failed to install Node.js")
-            }
-        }
-        updateStatus("Node.js ready")
-
-        // Step 2b: Install Python
-        if (!serverManager.isPythonInstalled()) {
-            updateStatus("Installing Python…")
-            val pyOk = serverManager.installPython { msg -> updateDetail(msg) }
-            if (!pyOk) {
-                Log.w(TAG, "Python install failed — continuing without it")
-            }
+            updateStatus("Installing proot…")
+            val ok = serverManager.installProot { msg -> updateDetail(msg) }
+            if (!ok) throw RuntimeException("Failed to install proot")
         }
 
-        // Step 2c: Install bionic-compat.js (Android platform shim for Node.js)
-        serverManager.ensureBionicCompat()
-
-        // Step 2e: Install Nastech agent (Ubuntu/Linux path via uv, non-fatal)
+        // Step 3: Install Nastech
         if (!serverManager.isNastechInstalled()) {
-            updateStatus("Installing Nastech agent…", "This may take a few minutes")
-            val nastechOk = serverManager.installNastech { msg -> updateDetail(msg) }
-            if (!nastechOk) {
-                Log.w(TAG, "Nastech install failed — continuing without it")
+            updateStatus("Installing Nastech…", "This may take a few minutes")
+            val ok = serverManager.installNastech { msg -> updateDetail(msg) }
+            if (!ok) {
+                Log.w(TAG, "Nastech install returned false — attempting to start anyway")
             } else {
-                updateStatus("Nastech agent installed")
+                updateStatus("Nastech installed")
             }
         }
 
-        // Step 2d: Install OpenClaw
-        if (!serverManager.isOpenClawInstalled()) {
-            updateStatus("Installing build dependencies…")
-            serverManager.installOpenClawDeps { msg -> updateDetail(msg) }
+        // Step 4: Start Nastech gateway
+        updateStatus("Starting Nastech…")
+        val started = serverManager.startNastech()
+        if (!started) throw RuntimeException("Failed to start Nastech gateway")
 
-            updateStatus("Installing OpenClaw…", "This may take several minutes")
-            val openclawOk = serverManager.installOpenClaw { msg -> updateDetail(msg) }
-            if (!openclawOk) {
-                Log.w(TAG, "OpenClaw install failed — continuing without it")
-            } else {
-                updateStatus("OpenClaw installed")
-            }
-        }
+        // Step 5: Wait for dashboard on port 9119
+        updateStatus("Waiting for Nastech dashboard…")
+        val ready = serverManager.waitForNastech(90_000)
+        if (!ready) throw RuntimeException("Nastech dashboard did not become ready on port 9119")
 
-        // Step 3: Install Codex CLI
-        if (!serverManager.isCodexInstalled()) {
-            updateStatus("Installing Codex CLI…", "This may take a few minutes")
-            val codexOk = serverManager.installCodex { msg -> updateDetail(msg) }
-            if (!codexOk) {
-                throw RuntimeException("Failed to install Codex")
-            }
-        }
-
-        // Ensure codex wrapper script exists
-        serverManager.ensureCodexWrapperScript()
-
-        // Step 3a: Extract web UI from APK assets (every launch)
-        updateStatus("Updating web UI…")
-        serverManager.installServerBundle { msg -> updateDetail(msg) }
-
-        // Step 3b: Install native platform binary
-        if (!serverManager.isPlatformBinaryInstalled()) {
-            updateStatus("Installing Codex platform binary…")
-            val binOk = serverManager.installPlatformBinary { msg -> updateDetail(msg) }
-            if (!binOk) {
-                throw RuntimeException("Failed to install Codex platform binary")
-            }
-        }
-        updateStatus("Codex ready")
-
-        // Step 3c: Write full-access config and create default workspace
-        serverManager.ensureFullAccessConfig()
-        serverManager.ensureDefaultWorkspace()
-
-        // Step 4: Start CONNECT proxy (needed for native binary DNS/TLS)
-        updateStatus("Starting network proxy…")
-        if (!serverManager.startProxy()) {
-            throw RuntimeException("Failed to start network proxy")
-        }
-
-        // Step 5: Authenticate via `codex login`
-        updateStatus("Checking authentication…")
-        if (!serverManager.isLoggedIn()) {
-            updateStatus("Login required — opening browser…")
-            val authOk = serverManager.loginWithUrl(
-                onLoginUrl = { url ->
-                    runOnUiThread {
-                        startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
-                    }
-                },
-                onProgress = { msg -> updateDetail(msg) },
-            )
-            if (!authOk && !serverManager.isLoggedIn()) {
-                updateStatus("Browser login failed — enter API key manually")
-                val apiKey = requestApiKey()
-                if (apiKey.isBlank()) {
-                    throw RuntimeException("No API key provided")
-                }
-                val loginOk = serverManager.loginWithApiKey(apiKey)
-                if (!loginOk) {
-                    throw RuntimeException("Login failed — check your API key")
-                }
-            }
-        }
-        updateStatus("Authenticated")
-
-        // Step 6: Health check
-        updateStatus("Verifying API access…", "Sending test message")
-        val healthOk = serverManager.healthCheck { msg -> updateDetail(msg) }
-        if (!healthOk) {
-            throw RuntimeException("API health check failed — Codex could not reach OpenAI")
-        }
-        updateStatus("API verified")
-
-        // Step 7: Configure and start OpenClaw
-        if (serverManager.isOpenClawInstalled()) {
-            updateStatus("Configuring OpenClaw…")
-            serverManager.configureOpenClawAuth()
-
-            updateStatus("Starting OpenClaw gateway…")
-            serverManager.startOpenClawGateway()
-
-            updateStatus("Starting OpenClaw Control UI…")
-            serverManager.startOpenClawControlUiServer()
-        }
-
-        // Step 7c: Start Nastech gateway on port 9119
-        if (serverManager.isNastechInstalled()) {
-            updateStatus("Starting Nastech gateway…")
-            serverManager.startNastech()
-        }
-
-        // Step 8: Start web server
-        updateStatus("Starting server…")
-        val started = serverManager.startServer()
-        if (!started) {
-            throw RuntimeException("Failed to start server")
-        }
-
-        // Step 9: Wait for ready
-        updateStatus("Waiting for server…")
-        val ready = serverManager.waitForServer(timeoutMs = 90_000)
-        if (!ready) {
-            throw RuntimeException("Server did not start in time")
-        }
-
-        // Step 10: Show web UI
+        // Step 6: Show dashboard
         runOnUiThread {
             showLoading(false)
             webView.visibility = View.VISIBLE
-            webView.loadUrl("http://127.0.0.1:${CodexServerManager.SERVER_PORT}/")
+            webView.loadUrl("http://127.0.0.1:${CodexServerManager.NASTECH_PORT}/")
         }
     }
 
-    /**
-     * Fallback: prompt for API key if browser login fails.
-     */
-    private fun requestApiKey(): String {
-        var result = ""
-        val lock = Object()
-
-        runOnUiThread {
-            val input = EditText(this).apply {
-                hint = getString(R.string.api_key_hint)
-                setSingleLine(true)
-            }
-            val padding = (24 * resources.displayMetrics.density).toInt()
-            val container = android.widget.FrameLayout(this).apply {
-                setPadding(padding, padding / 2, padding, 0)
-                addView(input)
-            }
-
-            AlertDialog.Builder(this)
-                .setTitle(R.string.api_key_title)
-                .setMessage(R.string.api_key_message)
-                .setView(container)
-                .setCancelable(false)
-                .setPositiveButton(R.string.ok) { _, _ ->
-                    result = input.text.toString().trim()
-                    synchronized(lock) { lock.notifyAll() }
-                }
-                .setNegativeButton(R.string.cancel) { _, _ ->
-                    synchronized(lock) { lock.notifyAll() }
-                }
-                .show()
-        }
-
-        synchronized(lock) {
-            lock.wait(300_000)
-        }
-        return result
-    }
-
-    // ── UI helpers ──────────────────────────────────────────────────────────
+    // ── UI helpers ─────────────────────────────────────────────────────────
 
     private fun showError(message: String) {
         AlertDialog.Builder(this)
             .setTitle(R.string.error_title)
             .setMessage(message)
-            .setPositiveButton(R.string.retry) { _, _ ->
-                startSetupFlow()
-            }
-            .setNegativeButton(R.string.cancel) { _, _ ->
-                finish()
-            }
+            .setPositiveButton(R.string.retry) { _, _ -> startSetupFlow() }
+            .setNegativeButton(R.string.cancel) { _, _ -> finish() }
             .setCancelable(false)
             .show()
     }
