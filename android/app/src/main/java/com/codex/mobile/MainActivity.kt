@@ -150,9 +150,19 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // Installations complete — user starts Nastech manually
+        // Step 4: Start terminal (pty server)
+        updateStatus("Starting terminal…")
+        serverManager.startPtyServer()
+
+        updateStatus("Waiting for terminal…")
+        val termReady = serverManager.waitForPtyServer(30_000)
+        if (!termReady) throw RuntimeException("Terminal server did not start")
+
+        // Step 5: Show terminal — user runs everything from here
         runOnUiThread {
             showLoading(false)
+            webView.visibility = View.VISIBLE
+            webView.loadUrl("http://127.0.0.1:${CodexServerManager.PTY_SERVER_PORT}/")
         }
     }
 

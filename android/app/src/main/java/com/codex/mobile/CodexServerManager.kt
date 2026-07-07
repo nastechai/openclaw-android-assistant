@@ -16,10 +16,12 @@ class CodexServerManager(private val context: Context) {
 
     companion object {
         private const val TAG = "NastechServerManager"
-        const val NASTECH_PORT = 9119
+        const val NASTECH_PORT    = 9119
+        const val PTY_SERVER_PORT = 9120
     }
 
-    private var nastechProcess: Process? = null
+    private var nastechProcess:   Process? = null
+    private var ptyServerProcess: Process? = null
 
     // ── Shell helpers ──────────────────────────────────────────────────────
 
@@ -209,9 +211,92 @@ class CodexServerManager(private val context: Context) {
         nastechProcess = null
     }
 
+    // ── PTY terminal server ────────────────────────────────────────────────────
+
+    /**
+     * Copy pty_server.py from APK assets into the home dir and launch it
+     * with the Nastech venv Python (falls back to system python3).
+     */
+    fun startPtyServer(): Boolean {
+        ptyServerProcess?.let {
+            return try { it.exitValue(); false } catch (_: IllegalThreadStateException) { true }
+        }
+
+        val paths  = BootstrapInstaller.getPaths(context)
+        val script = File(paths.homeDir, ".nastech/pty_server.py")
+
+        // Extract asset → home dir
+        try {
+            context.assets.open("pty_server.py").use { inp ->
+                script.parentFile?.mkdirs()
+                script.outputStream().use { out -> inp.copyTo(out) }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to extract pty_server.py: ${e.message}")
+            return false
+        }
+
+        // Prefer nastech venv python, fall back to python3 on PATH
+        val venvPython = File("${paths.homeDir}/.nastech/nastech-agent/venv/bin/python")
+        val python = if (venvPython.exists()) venvPython.absolutePath else "python3"
+
+        val env = buildEnvironment(paths).toMutableMap()
+        env["PYTHONUNBUFFERED"] = "1"
+
+        val pb = ProcessBuilder(python, script.absolutePath)
+        pb.environment().clear()
+        pb.environment().putAll(env)
+        pb.directory(File(paths.homeDir))
+        pb.redirectErrorStream(true)
+
+        val proc = pb.start()
+        ptyServerProcess = proc
+
+        Thread {
+            val reader = java.io.BufferedReader(java.io.InputStreamReader(proc.inputStream))
+            var line = reader.readLine()
+            while (line != null) {
+                Log.d(TAG, "[pty] $line")
+                line = reader.readLine()
+            }
+            Log.i(TAG, "PTY server exited with code: ${proc.waitFor()}")
+            ptyServerProcess = null
+        }.start()
+
+        Thread.sleep(1500)
+        val alive = ptyServerProcess?.let {
+            try { it.exitValue(); false } catch (_: IllegalThreadStateException) { true }
+        } ?: false
+        Log.i(TAG, "PTY server started=$alive on :$PTY_SERVER_PORT")
+        return alive
+    }
+
+    /** Poll http://127.0.0.1:9120/ until ready or timeout. */
+    fun waitForPtyServer(timeoutMs: Long = 30_000): Boolean {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            try {
+                val conn = URL("http://127.0.0.1:$PTY_SERVER_PORT/").openConnection() as HttpURLConnection
+                conn.connectTimeout = 1_000
+                conn.readTimeout   = 1_000
+                val code = conn.responseCode
+                conn.disconnect()
+                if (code < 500) return true
+            } catch (_: Exception) {}
+            Thread.sleep(300)
+        }
+        return false
+    }
+
+    fun stopPtyServer() {
+        ptyServerProcess?.destroy()
+        ptyServerProcess = null
+    }
+
     fun stopServer() {
+        stopPtyServer()
         stopNastech()
-        Log.i(TAG, "Nastech stopped")
+        Log.i(TAG, "Stopped")
     }
 
     // ── Environment ───────────────────────────────────────────────────────────
