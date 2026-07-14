@@ -67,7 +67,7 @@ jobs:
 
       - name: Create Release
         if: github.ref_type == 'branch'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           token: ${{ secrets.PAT || github.token }}
           tag_name: v${{ github.run_number }}
